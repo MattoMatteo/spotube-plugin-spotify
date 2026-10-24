@@ -26,15 +26,18 @@ class TrackEndpoint {
     return client.track.getTrack(trackId).then((data){
       var query = "${data['name']} Radio"
       return client.search.playlists(query, limit: 20).then((data) {
-        var playlists = data["items"];
-        var radioPlaylist = playlists.firstWhere((playlist) => playlist["name"] == query, orElse: () => null);
+        var playlists = data?["items"] ?? []
+        var radioPlaylist = playlists.firstWhere((playlist) => playlist != null && playlist["name"] == query, orElse: () => null)
+        if (radioPlaylist == null || radioPlaylist["id"] == null) {
+          return []
+        }
         return client.playlist.tracks(radioPlaylist["id"], offset: 0, limit: 50)
           .then((data) {
-            var tracks = data["items"].map((item){
-              item["track"]["available_markets"] = null
-              return item["track"]
-            })
-            .toList()
+            // playlist.tracks already returns flat track objects (no {track: ...} wrapper).
+            // Drop local/unavailable entries that have no id.
+            var tracks = (data?["items"] ?? [])
+              .where((track) => track != null && track["id"] != null)
+              .toList()
 
             return Converters.fullTracks(tracks)
           });
