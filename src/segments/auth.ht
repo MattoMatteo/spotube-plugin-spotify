@@ -17,9 +17,18 @@ var LocalStorage = spotube.LocalStorage
 var Webview = spotube.Webview
 var Cookie = spotube.Cookie
 
+/// How often the refresh watchdog checks the token.
+const WATCHDOG_INTERVAL_MS = 60000
+/// Refresh this long before the token actually expires, so requests don't race expiration.
+const REFRESH_MARGIN_MS = 120000
+/// Minimum time before retrying a refresh that hasn't completed (failed or still in flight).
+const REFRESH_RETRY_MS = 60000
+
 class SpotifyAuthEndpoint {
   final controller: StreamController
   var _timer: Timer
+  /// Millis since epoch when the pending refresh started, null when none is pending.
+  var _refreshStartedAt: int
   /// Map of:
   /// - `cookies`: Map of cookies from <Cookie>.toJson()
   /// - `accessToken`: The access token string
@@ -37,46 +46,56 @@ class SpotifyAuthEndpoint {
       if(onEvent != null) {
         onEvent(event)
       }
-      if(event["type"] == "recovered" || event["type"] == "login") {
-        _timer?.cancel()
-        _timer = Timer.periodic(getExpirationDuration(), (cancel){
-          refreshCredentials()
-        })
-      }
     })
 
     initializeFromLocalStorage()
   }
 
-  fun isExpired() -> bool {
-		if (credentials == null) {
+  /// True when the token is expired or will expire within [marginMs].
+  fun isExpired({marginMs: int}) -> bool {
+		if (credentials == null || credentials["expiration"] == null) {
 			return true
 		}
 
-		final currentTime = DateTime.now()
+		final now = DateTime.now().millisecondsSinceEpoch
 
-		final expirationTime = DateTime.fromMillisecondsSinceEpoch(credentials["expiration"])
-
-		return currentTime.isAfter(expirationTime)
+		return now + (marginMs ?? 0) >= credentials["expiration"]
 	}
 
-  fun getExpirationDuration() -> Duration {
-		if (credentials == null) {
-			return 0;
-		}
+  /// Starts a periodic check that refreshes the token shortly before it expires.
+  /// Unlike a timer set to the token lifetime, this keeps working after every refresh,
+  /// retries failed refreshes (Hetu futures can't catch errors) and catches up after sleep.
+  fun startRefreshWatchdog() {
+    if (_timer != null) {
+      return
+    }
+    _timer = Timer.periodic(Duration(milliseconds: WATCHDOG_INTERVAL_MS), (timer){
+      refreshIfNeeded()
+    })
+  }
 
-		final currentTime = DateTime.now()
+  fun stopRefreshWatchdog() {
+    _timer?.cancel()
+    _timer = null
+  }
 
-		final expirationTime = DateTime.fromMillisecondsSinceEpoch(credentials["expiration"])
-
-		return expirationTime.difference(currentTime)
-	}
+  fun refreshIfNeeded() {
+    if (credentials == null || !isExpired(marginMs: REFRESH_MARGIN_MS)) {
+      return
+    }
+    final now = DateTime.now().millisecondsSinceEpoch
+    if (_refreshStartedAt != null && now - _refreshStartedAt < REFRESH_RETRY_MS) {
+      return
+    }
+    refreshCredentials()
+  }
 
 
   fun initializeFromLocalStorage() {
 		LocalStorage.getString("credentials").then((credentialsStr){
       if (credentialsStr != null) {
         credentials = JSON.decode(credentialsStr);
+        startRefreshWatchdog()
         if (isExpired()) {
           refreshCredentials()
         } else {
@@ -90,7 +109,10 @@ class SpotifyAuthEndpoint {
     return client.get_req(
       "https://api.github.com/gists/22ed9c6ba463899e933427f7de1f0eef"
     ).then((res) {
-      var data = JSON.decode(JSON.decode(res.data)["files"]["nuances.json"]["content"]);
+      // dio already decodes application/json responses, so res.data is usually a Map
+      var body = res.data is str ? JSON.decode(res.data) : res.data
+      var content = body["files"]["nuances.json"]["content"]
+      var data = content is str ? JSON.decode(content) : content
       data.sort((a, b) => b["v"].compareTo(a["v"]))
       return data.first
     })
@@ -132,7 +154,7 @@ class SpotifyAuthEndpoint {
     mode: string,
     totpVer: int
 	}) -> Future {
-    print("Timestamp: ${timestamp}, TOTP: ${totp}, Mode: ${mode}, spDc: ${spDc}")
+    print("[getToken] Requesting access token (mode: ${mode}, totpVer: ${totpVer})")
     final timestampSeconds = (timestamp.millisecondsSinceEpoch / 1000).floor()
 		final accessTokenUrl = "https://open.spotify.com/api/token?reason=${mode}&productType=web-player&totp=${totp}&totpServer=${totp}&totpVer=${totpVer}"
 
@@ -188,21 +210,29 @@ class SpotifyAuthEndpoint {
 		return this.credentialsFromCookie(cookies).then((creds){
       LocalStorage.setString("credentials", JSON.encode(creds.toJson()));
       credentials = creds;
+      _refreshStartedAt = null
+      startRefreshWatchdog()
 
       controller.add({type: "login"}.toJson());
     })
 	}
 
 	fun refreshCredentials() -> Future {
-		if (credentials["cookies"] == null) {
+		if (credentials == null || credentials["cookies"] == null) {
 			print(
 				"[refreshCredentials] No cookie found. Cannot refresh credentials.",
 			);
 			return;
 		}
+		_refreshStartedAt = DateTime.now().millisecondsSinceEpoch
 		return this.credentialsFromCookie(credentials["cookies"]).then((creds){
+      // Logged out while the refresh was in flight
+      if (credentials == null) {
+        return
+      }
       LocalStorage.setString("credentials", JSON.encode(creds.toJson()));
       credentials = creds;
+      _refreshStartedAt = null
       controller.add({ type: "refreshed" }.toJson())
     })
 	}
@@ -227,6 +257,8 @@ class SpotifyAuthEndpoint {
 
 	fun logout() {
 		credentials = null;
+		_refreshStartedAt = null
+		stopRefreshWatchdog()
 		LocalStorage.remove("credentials");
 		controller.add({type: "logout"}.toJson());
 	}
