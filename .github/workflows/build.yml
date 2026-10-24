@@ -1,18 +1,12 @@
 name: Plugin Build
 on:
-  # push:
-  #   branches:
-  #     - main
-  # pull_request:
-  #   branches:
-  #     - main
   workflow_dispatch:
     inputs:
       version:
         type: string
-        description: 'Version (x.x.x)'
+        # Spotube's update check (src/segments/core.ht) parses the tag as x.y.z, no "v"
+        description: 'Version (x.y.z, must match plugin.json)'
         required: true
-        default: 'continuous'
 
 permissions:
   contents: write
@@ -26,6 +20,14 @@ jobs:
         with:
           submodules: true
 
+      - name: Check version matches plugin.json
+        run: |
+          manifest_version=$(jq -r .version plugin.json)
+          if [ "$manifest_version" != "${{ inputs.version }}" ]; then
+            echo "::error::Input version ${{ inputs.version }} != plugin.json version $manifest_version"
+            exit 1
+          fi
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -33,28 +35,30 @@ jobs:
           flutter-version: 3.35.2
 
       - name: Install dependencies
+        # 0.1.0+2 emits hetu_script 0.4.2 bytecode, the runtime of Spotube 5.1.2
         run: dart pub global activate hetu_script_dev_tools 0.1.0+2
-      
+
       - name: Run build
         run: make
 
       - name: Archive plugin
         run: make archive
         shell: bash
-      
-      - name: Upload plugin archive
-        uses: actions/upload-artifact@v4
-        with:
-          path: build/plugin.smplug
 
-      - name: Upload to release (${{ github.event.inputs.version }})
+      # The installer and Spotube's update check use the latest non-prerelease
+      # release, so publish it as the latest one. No Actions artifact: the
+      # release asset is enough.
+      - name: Upload to release (${{ inputs.version }})
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.event.inputs.version }}
-          omitBodyDuringUpdate: true
-          omitNameDuringUpdate: true
-          omitPrereleaseDuringUpdate: true
+          tag: ${{ inputs.version }}
+          commit: ${{ github.sha }}
+          name: ${{ inputs.version }}
+          body: |
+            Spotify metadata plugin (Hetu) for Spotube 5.1.2, built from `${{ github.ref_name }}` at ${{ github.sha }}.
+          prerelease: false
+          makeLatest: true
           allowUpdates: true
+          replacesArtifacts: true
           artifacts: build/plugin.smplug
-      
