@@ -14,6 +14,16 @@ class BrowseEndpoint {
 
   fun sections({offset: int, limit: int}) {
     return Timezone.getLocalTimeZone().then((timeZone){
+      // Not logged in (yet): return an empty home instead of crashing on null credentials
+      if (auth.credentials == null) {
+        return {
+          limit: limit ?? 20,
+          nextOffset: null,
+          hasMore: false,
+          total: 0,
+          items: [],
+        }.toJson()
+      }
       return client.browse.home(
         timeZone: timeZone,
         spTCookie: auth.credentials["cookies"].where((c)=>c["name"] == "sp_t").elementAt(0)["value"]
