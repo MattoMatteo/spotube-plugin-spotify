@@ -26,7 +26,8 @@ const REFRESH_RETRY_MS = 60000
 
 class SpotifyAuthEndpoint {
   final controller: StreamController
-  var _timer: Timer
+  /// Incremented on every watchdog start, so an older timer chain stops itself.
+  var _watchdogId: int = 0
   /// Millis since epoch when the pending refresh started, null when none is pending.
   var _refreshStartedAt: int
   /// Map of:
@@ -65,18 +66,21 @@ class SpotifyAuthEndpoint {
   /// Starts a periodic check that refreshes the token shortly before it expires.
   /// Unlike a timer set to the token lifetime, this keeps working after every refresh,
   /// retries failed refreshes (Hetu futures can't catch errors) and catches up after sleep.
+  /// It's a chain of one-shot timers that ends after logout: Hetu 0.4 can't call
+  /// methods like cancel() on Dart's Timer ("Undefined identifier [_Timer]").
   fun startRefreshWatchdog() {
-    if (_timer != null) {
-      return
-    }
-    _timer = Timer.periodic(Duration(milliseconds: WATCHDOG_INTERVAL_MS), (timer){
-      refreshIfNeeded()
-    })
+    _watchdogId++
+    scheduleWatchdogTick(_watchdogId)
   }
 
-  fun stopRefreshWatchdog() {
-    _timer?.cancel()
-    _timer = null
+  fun scheduleWatchdogTick(id: int) {
+    Timer(Duration(milliseconds: WATCHDOG_INTERVAL_MS), (){
+      if (id != _watchdogId || credentials == null) {
+        return
+      }
+      refreshIfNeeded()
+      scheduleWatchdogTick(id)
+    })
   }
 
   fun refreshIfNeeded() {
@@ -258,7 +262,6 @@ class SpotifyAuthEndpoint {
 	fun logout() {
 		credentials = null;
 		_refreshStartedAt = null
-		stopRefreshWatchdog()
 		LocalStorage.remove("credentials");
 		controller.add({type: "logout"}.toJson());
 	}
