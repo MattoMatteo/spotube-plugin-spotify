@@ -1,5 +1,9 @@
+import 'module:std' as std
 import { SpotifyGqlApi } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/spotify_gql_api_client.ht'
 import { Converters } from '../converter/converter.ht'
+
+var RequestOptions = std.RequestOptions
+var JSON = std.JSON
 
 class TrackEndpoint {
   var client: SpotifyGqlApi
@@ -23,6 +27,32 @@ class TrackEndpoint {
   }
 
   fun radio(trackId: string) {
+    // Same endpoint the web player (and the Kotlin rewrite) uses to get a track's radio playlist.
+    // validateStatus accepts every status so an HTTP error falls back to search instead of throwing.
+    return client.apiClient.get_req(
+      "https://spclient.wg.spotify.com/inspiredby-mix/v2/seed_to_playlist/spotify:track:${trackId}",
+      queryParameters: { "response-format": "json" }.toJson(),
+      options: RequestOptions(validateStatus: (status) => true),
+    ).then((res) {
+      var body = res.data
+      if (res.statusCode != 200 || body == null) {
+        return radioFromSearch(trackId)
+      }
+      if (body is str) {
+        body = JSON.decode(body)
+      }
+
+      var mediaItems = body["mediaItems"]
+      var playlistUri = mediaItems == null || mediaItems.isEmpty ? null : mediaItems.first?["uri"]
+      if (playlistUri == null) {
+        return radioFromSearch(trackId)
+      }
+
+      return playlistTracks(playlistUri.split(":").last)
+    })
+  }
+
+  fun radioFromSearch(trackId: string) {
     return client.track.getTrack(trackId).then((data){
       var query = "${data['name']} Radio"
       return client.search.playlists(query, limit: 20).then((data) {
@@ -31,18 +61,22 @@ class TrackEndpoint {
         if (radioPlaylist == null || radioPlaylist["id"] == null) {
           return []
         }
-        return client.playlist.tracks(radioPlaylist["id"], offset: 0, limit: 50)
-          .then((data) {
-            // playlist.tracks already returns flat track objects (no {track: ...} wrapper).
-            // Drop local/unavailable entries that have no id.
-            var tracks = (data?["items"] ?? [])
-              .where((track) => track != null && track["id"] != null)
-              .toList()
-
-            return Converters.fullTracks(tracks)
-          });
+        return playlistTracks(radioPlaylist["id"])
       })
     })
+  }
+
+  fun playlistTracks(playlistId: string) {
+    return client.playlist.tracks(playlistId, offset: 0, limit: 50)
+      .then((data) {
+        // playlist.tracks already returns flat track objects (no {track: ...} wrapper).
+        // Drop local/unavailable entries that have no id.
+        var tracks = (data?["items"] ?? [])
+          .where((track) => track != null && track["id"] != null)
+          .toList()
+
+        return Converters.fullTracks(tracks)
+      });
   }
 }
 
