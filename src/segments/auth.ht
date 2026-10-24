@@ -110,9 +110,9 @@ class SpotifyAuthEndpoint {
       "https://api.github.com/gists/22ed9c6ba463899e933427f7de1f0eef"
     ).then((res) {
       // dio already decodes application/json responses, so res.data is usually a Map
-      var body = res.data is str ? JSON.decode(res.data) : res.data
+      var body = (res.data is str) ? JSON.decode(res.data) : res.data
       var content = body["files"]["nuances.json"]["content"]
-      var data = content is str ? JSON.decode(content) : content
+      var data = (content is str) ? JSON.decode(content) : content
       data.sort((a, b) => b["v"].compareTo(a["v"]))
       return data.first
     })
