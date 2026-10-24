@@ -2,6 +2,9 @@ import 'module:std' as std
 import { SpotifyGqlApi } from '../../dependencies/hetu_spotify_gql_client/lib/assets/hetu/spotify_gql_api_client.ht'
 import { Converters } from '../converter/converter.ht'
 
+// External classes must be bound by name in this module, even when only used indirectly
+var HttpClient = std.HttpClient
+var HttpResponse = std.HttpResponse
 var RequestOptions = std.RequestOptions
 var JSON = std.JSON
 
