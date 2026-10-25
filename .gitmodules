@@ -4,4 +4,4 @@
 [submodule "dependencies/hetu_spotify_gql_client"]
 	path = dependencies/hetu_spotify_gql_client
 	url = https://github.com/MattoMatteo/spotify-gql-client.git
-	branch = hetu-fixes
+	branch = main
